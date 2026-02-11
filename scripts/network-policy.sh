@@ -16,6 +16,9 @@ NETWORK_ALLOWLIST="${NETWORK_ALLOWLIST:-}"
 ESSENTIAL_DOMAINS="
 login.microsoftonline.com
 graph.microsoft.com
+smba.trafficmanager.net
+directline.botframework.com
+api.botframework.com
 "
 
 # LLM provider domains based on configured keys
