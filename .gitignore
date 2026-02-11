@@ -1,0 +1,26 @@
+# Environment files with secrets
+.env
+.env.local
+.env.*.local
+
+# OpenClaw runtime data
+.openclaw/
+
+# Node
+node_modules/
+*.log
+npm-debug.log*
+
+# Build artifacts
+dist/
+*.tgz
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Docker data volumes
+data/

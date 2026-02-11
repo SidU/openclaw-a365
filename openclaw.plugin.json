@@ -1,0 +1,9 @@
+{
+  "id": "a365",
+  "channels": ["a365"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

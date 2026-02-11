@@ -1,0 +1,87 @@
+# Docker Compose for OpenClaw A365 Calendar Assistant
+#
+# Usage:
+#   1. Copy .env.example to .env and fill in your credentials
+#   2. Run: docker-compose up -d
+#   3. Configure your A365 agent to point to http://your-host:3978/api/messages
+#
+services:
+  openclaw-a365:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: openclaw-a365:latest
+    container_name: openclaw-a365
+    ports:
+      - "3978:3978"
+    environment:
+      # ===========================================
+      # Model Configuration
+      # ===========================================
+      # Primary model (default: anthropic/claude-opus-4-6)
+      - OPENCLAW_MODEL=${OPENCLAW_MODEL:-}
+      # Fallback models (comma-separated, tried in order if primary fails)
+      - OPENCLAW_FALLBACK_MODELS=${OPENCLAW_FALLBACK_MODELS:-}
+
+      # ===========================================
+      # API Keys (at least one required)
+      # ===========================================
+      # Anthropic API Key
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # OpenAI API Key (optional, for OpenAI/GPT models)
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      # OpenRouter API Key (optional, for access to many models)
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      # Azure OpenAI (optional)
+      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY:-}
+      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT:-}
+
+      # ===========================================
+      # A365 Bot Framework Credentials (required)
+      - A365_APP_ID=${A365_APP_ID}
+      - A365_APP_PASSWORD=${A365_APP_PASSWORD}
+      - A365_TENANT_ID=${A365_TENANT_ID}
+
+      # Agentic Blueprint (required for T1/T2/User flow)
+      - AA_INSTANCE_ID=${AA_INSTANCE_ID}
+
+      # Identity Configuration (required)
+      - AGENT_IDENTITY=${AGENT_IDENTITY}
+      - OWNER=${OWNER}
+      - OWNER_AAD_ID=${OWNER_AAD_ID}
+
+      # Business Hours (optional, with defaults)
+      - BUSINESS_HOURS_START=${BUSINESS_HOURS_START:-08:00}
+      - BUSINESS_HOURS_END=${BUSINESS_HOURS_END:-18:00}
+      - TIMEZONE=${TIMEZONE:-America/Los_Angeles}
+
+      # DM Policy (optional, default: pairing)
+      - DM_POLICY=${DM_POLICY:-pairing}
+
+      # External Token Service (optional)
+      - TOKEN_CALLBACK_URL=${TOKEN_CALLBACK_URL:-}
+      - TOKEN_CALLBACK_TOKEN=${TOKEN_CALLBACK_TOKEN:-}
+
+      # OpenClaw Configuration
+      - OPENCLAW_LOG_LEVEL=${OPENCLAW_LOG_LEVEL:-info}
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-openclaw-a365-default-token}
+      - NODE_ENV=production
+    volumes:
+      # Persist conversation state and OpenClaw data
+      - openclaw-data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3978/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  openclaw-data:
+    driver: local

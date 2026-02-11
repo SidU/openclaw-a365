@@ -1,0 +1,45 @@
+{
+  "gateway": {
+    "mode": "local"
+  },
+  "plugins": {
+    "entries": {
+      "a365": {
+        "enabled": true
+      }
+    },
+    "installs": {
+      "a365": {
+        "source": "path",
+        "sourcePath": "/app",
+        "installPath": "/root/.openclaw/extensions/a365"
+      }
+    }
+  },
+  "channels": {
+    "a365": {
+      "enabled": true,
+      "tenantId": "${A365_TENANT_ID}",
+      "appId": "${A365_APP_ID}",
+      "appPassword": "${A365_APP_PASSWORD}",
+      "webhook": {
+        "port": 3978,
+        "path": "/api/messages"
+      },
+      "graph": {
+        "aaInstanceId": "${AA_INSTANCE_ID}",
+        "scope": "https://graph.microsoft.com/.default"
+      },
+      "agentIdentity": "${AGENT_IDENTITY}",
+      "owner": "${OWNER}",
+      "ownerAadId": "${OWNER_AAD_ID}",
+      "businessHours": {
+        "start": "${BUSINESS_HOURS_START}",
+        "end": "${BUSINESS_HOURS_END}",
+        "timezone": "${TIMEZONE}"
+      },
+      "dmPolicy": "${DM_POLICY}",
+      "allowFrom": []
+    }
+  }
+}
