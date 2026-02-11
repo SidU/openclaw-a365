@@ -12,9 +12,22 @@ services:
       dockerfile: Dockerfile
     image: openclaw-a365:latest
     container_name: openclaw-a365
+    # Required for network policy enforcement (iptables)
+    cap_add:
+      - NET_ADMIN
     ports:
       - "3978:3978"
     environment:
+      # ===========================================
+      # Network Policy (controls outbound access)
+      # ===========================================
+      # unrestricted - No restrictions (default)
+      # restricted   - Only essential domains (Microsoft, LLM provider)
+      # allowlist    - Essential + NETWORK_ALLOWLIST domains
+      - NETWORK_MODE=${NETWORK_MODE:-unrestricted}
+      # Comma-separated domains to allow (only used when NETWORK_MODE=allowlist)
+      - NETWORK_ALLOWLIST=${NETWORK_ALLOWLIST:-}
+
       # ===========================================
       # Model Configuration
       # ===========================================

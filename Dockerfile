@@ -7,8 +7,8 @@ LABEL org.opencontainers.image.title="OpenClaw A365 Channel"
 LABEL org.opencontainers.image.description="Microsoft 365 Agents channel with native Graph API tools"
 LABEL org.opencontainers.image.source="https://github.com/openclaw/openclaw"
 
-# Install dependencies for native modules
-RUN apk add --no-cache python3 make g++ git cmake
+# Install dependencies for native modules and network policy enforcement
+RUN apk add --no-cache python3 make g++ git cmake iptables
 
 WORKDIR /app
 
@@ -36,8 +36,15 @@ RUN pnpm openclaw plugins install . && \
 # Now copy the full config with A365 channel enabled
 COPY config/openclaw.json /root/.openclaw/openclaw.json
 
-# Create entrypoint script with model configuration support
+# Copy network policy script
+COPY scripts/network-policy.sh /app/scripts/network-policy.sh
+RUN chmod +x /app/scripts/network-policy.sh
+
+# Create entrypoint script with network policy and model configuration support
 RUN printf '%s\n' '#!/bin/sh' > /app/entrypoint.sh && \
+    printf '%s\n' '' >> /app/entrypoint.sh && \
+    printf '%s\n' '# Apply network policy (if not unrestricted)' >> /app/entrypoint.sh && \
+    printf '%s\n' '/app/scripts/network-policy.sh' >> /app/entrypoint.sh && \
     printf '%s\n' '' >> /app/entrypoint.sh && \
     printf '%s\n' 'echo "=== Running doctor --fix ==="' >> /app/entrypoint.sh && \
     printf '%s\n' 'pnpm openclaw doctor --fix || echo "Doctor completed with warnings"' >> /app/entrypoint.sh && \

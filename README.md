@@ -8,6 +8,7 @@ Native Microsoft 365 Agents (A365) channel for OpenClaw with integrated Graph AP
 - **Graph API Tools**: Built-in tools for calendar, email, and user operations
 - **Agentic Identity**: Agent has its own user account in the tenant for explicit, auditable access
 - **Multi-Model Support**: Configure primary model and fallbacks (Anthropic, OpenAI, OpenRouter, Azure)
+- **Network Policy**: Control agent's outbound network access (unrestricted, restricted, or allowlist)
 - **Role-Based Access**: Distinguishes between Owner and Requester roles
 - **Enterprise-Ready**: Supports single-tenant authentication, allowlists, and DM policies
 
@@ -54,14 +55,16 @@ Required environment variables:
 ### 3. Run
 
 ```bash
-docker run --env-file .env -p 3978:3978 ghcr.io/sidu/openclaw-a365:latest
+docker run --cap-add=NET_ADMIN --env-file .env -p 3978:3978 ghcr.io/sidu/openclaw-a365:latest
 ```
 
 Or run in background:
 
 ```bash
-docker run -d --name openclaw-a365 --env-file .env -p 3978:3978 ghcr.io/sidu/openclaw-a365:latest
+docker run -d --name openclaw-a365 --cap-add=NET_ADMIN --env-file .env -p 3978:3978 ghcr.io/sidu/openclaw-a365:latest
 ```
+
+> **Note**: `--cap-add=NET_ADMIN` is required for [network policy](#network-policy) enforcement. If you're using `NETWORK_MODE=unrestricted` (default), you can omit it.
 
 ### 4. Configure A365
 
@@ -101,6 +104,56 @@ Supported providers:
 - **OpenAI**: `openai/gpt-4o`, `openai/gpt-4-turbo`
 - **OpenRouter**: `openrouter/anthropic/claude-3.5-sonnet`, etc.
 - **Azure OpenAI**: `azure/gpt-4o` (requires `AZURE_OPENAI_*` config)
+
+## Network Policy
+
+Control what external network resources the agent can access. Since LLM agents can execute code that makes network requests, you may want to restrict outbound access.
+
+### Modes
+
+| Mode | Description |
+|------|-------------|
+| `unrestricted` | No restrictions - agent can access any URL (default) |
+| `restricted` | Only essential domains: Microsoft (auth, Graph) + your configured LLM provider |
+| `allowlist` | Essential domains + custom domains you specify |
+
+### Configuration
+
+```bash
+# In your .env file:
+
+# Option 1: No restrictions (default)
+NETWORK_MODE=unrestricted
+
+# Option 2: Locked down to essentials only
+NETWORK_MODE=restricted
+
+# Option 3: Essentials + specific domains
+NETWORK_MODE=allowlist
+NETWORK_ALLOWLIST=api.weather.gov,api.github.com,your-api.internal.com
+```
+
+### How It Works
+
+Network policy is enforced via `iptables` at the container level, which catches all outbound traffic including shell commands. At container startup:
+
+1. Essential domains are resolved to IP addresses (Microsoft auth, Graph, your LLM provider)
+2. If using `allowlist` mode, your custom domains are also resolved
+3. iptables rules are applied to allow only those IPs
+4. All other outbound traffic is dropped
+
+### Running with Network Policy
+
+When using `restricted` or `allowlist` mode, the container needs the `NET_ADMIN` capability:
+
+```bash
+# With docker run:
+docker run --cap-add=NET_ADMIN --env-file .env -p 3978:3978 ghcr.io/sidu/openclaw-a365:latest
+
+# docker-compose.yml already includes this capability
+```
+
+> **Note**: In `unrestricted` mode (default), `NET_ADMIN` is not required.
 
 ## Why Agentic Identity?
 
