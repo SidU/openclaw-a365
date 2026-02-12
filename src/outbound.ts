@@ -1,84 +1,90 @@
 import type { ChannelOutboundAdapter } from "openclaw/plugin-sdk";
 import type { A365Config, A365MessageMetadata } from "./types.js";
-import { resolveA365Credentials } from "./token.js";
+import { resolveA365Credentials, getGraphToken } from "./token.js";
 import { getA365Runtime } from "./runtime.js";
+import { getConversationReference, getConversationReferenceByUser } from "./conversation-store.js";
 
 /**
- * Cached Bot Framework token with expiration.
+ * APX (Agent Platform Exchange) scope — the audience the Bot Framework
+ * service URL expects for agentic identity tokens.
  */
-type CachedBotToken = {
-  accessToken: string;
-  expiresAt: number;
-};
+const APX_SCOPE = "5a807f24-c9de-44ee-a3a7-329e88a00ffc/.default";
 
 /**
- * Bot Framework token cache.
- * Key format: "appId|tenantId"
- *
- * TODO: For multi-instance deployments (Kubernetes, etc.), consider using
- * a distributed cache (Redis) instead of in-memory storage.
+ * Resolve conversation ID and service URL from the provided params and the
+ * conversation store. Returns null if either value cannot be resolved.
  */
-const botTokenCache = new Map<string, CachedBotToken>();
+async function resolveConversation(
+  to: string | undefined,
+  serviceUrl: string | undefined,
+  metadata: A365MessageMetadata | undefined,
+  tenantId: string | undefined,
+): Promise<{ conversationId: string; serviceUrl: string } | null> {
+  const log = getA365Runtime().logging.getChildLogger({ name: "a365-outbound" });
 
-/**
- * Get an access token for Bot Framework using client credentials.
- * Implements caching with 5-minute expiration buffer.
- */
-async function getBotFrameworkToken(
-  appId: string,
-  appPassword: string,
-  tenantId: string,
-): Promise<string | undefined> {
-  const cacheKey = `${appId}|${tenantId}`;
-  const cached = botTokenCache.get(cacheKey);
+  let conversationId = to || metadata?.conversationId;
+  let conversationServiceUrl = serviceUrl || metadata?.serviceUrl;
 
-  // Return cached token if still valid (with 5 minute buffer)
-  if (cached && cached.expiresAt > Date.now() + 5 * 60 * 1000) {
-    return cached.accessToken;
-  }
+  log.info(`Resolved conversation params: conversationId=${conversationId} serviceUrl=${conversationServiceUrl}`);
 
-  const tokenEndpoint = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
+  if (!conversationServiceUrl && conversationId) {
+    log.info(`Looking up stored conversation reference for conversationId=${conversationId}`);
+    let storedRef = await getConversationReference(conversationId);
 
-  const body = new URLSearchParams({
-    grant_type: "client_credentials",
-    client_id: appId,
-    client_secret: appPassword,
-    scope: "https://api.botframework.com/.default",
-  });
-
-  try {
-    const response = await fetch(tokenEndpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: body.toString(),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      const log = getA365Runtime().logging.getChildLogger({ name: "a365-outbound" });
-      log.error("Failed to get bot framework token", { status: response.status, error: errorText });
-      return undefined;
+    // If direct lookup fails and conversationId looks like a userAadId (UUID without colons/@),
+    // try looking up by userAadId as a fallback
+    if (!storedRef && !conversationId.includes(":") && !conversationId.includes("@")) {
+      log.info(`Direct lookup failed, trying userAadId lookup for ${conversationId}`);
+      storedRef = await getConversationReferenceByUser(conversationId);
     }
 
-    const data = (await response.json()) as { access_token: string; expires_in?: number };
-
-    // Cache the token
-    const expiresIn = data.expires_in ?? 3600; // Default to 1 hour if not provided
-    botTokenCache.set(cacheKey, {
-      accessToken: data.access_token,
-      expiresAt: Date.now() + expiresIn * 1000,
-    });
-
-    return data.access_token;
-  } catch (err) {
-    const log = getA365Runtime().logging.getChildLogger({ name: "a365-outbound" });
-    log.error("Error getting bot framework token", { error: String(err) });
-    return undefined;
+    if (storedRef) {
+      conversationServiceUrl = storedRef.serviceUrl;
+      conversationId = storedRef.conversationId;
+      log.info(`Found stored conversation reference: conversationId=${conversationId} serviceUrl=${conversationServiceUrl}`);
+    }
   }
+
+  // Fallback: Construct Teams service URL from tenant ID if still missing
+  if (!conversationServiceUrl && tenantId) {
+    conversationServiceUrl = `https://smba.trafficmanager.net/amer/${tenantId}/`;
+    log.info("Using constructed Teams service URL", { serviceUrl: conversationServiceUrl });
+  }
+
+  if (!conversationServiceUrl || !conversationId) {
+    return null;
+  }
+
+  return { conversationId, serviceUrl: conversationServiceUrl };
 }
 
 /**
- * Send a message to a conversation via Bot Framework REST API.
+ * Send a proactive message using the agent's own identity.
+ *
+ * Uses our manual T1/T2/User FIC token flow (which uses the correct `username`
+ * field) with the APX scope, then sends via the SDK's ConnectorClient.
+ *
+ * Note: The SDK's built-in getAgenticUserToken() has a bug — it sends `user_id`
+ * instead of `username` in the User FIC request, causing AADSTS50000 errors.
+ * Our manual flow works around this.
+ */
+async function sendViaConnectorClient(params: {
+  conversationId: string;
+  serviceUrl: string;
+  token: string;
+  activity: Record<string, unknown>;
+}): Promise<{ id?: string }> {
+  const { conversationId, serviceUrl, token, activity } = params;
+  const { ConnectorClient } = await import("@microsoft/agents-hosting");
+
+  const client = ConnectorClient.createClientWithToken(serviceUrl, token);
+  const result = await client.sendToConversation(conversationId, activity);
+  return { id: (result as { id?: string })?.id };
+}
+
+/**
+ * Send a message to a conversation using the agent's own identity.
+ * Acquires an APX-scoped token via T1/T2/User FIC, then sends via ConnectorClient.
  */
 export async function sendMessageA365(params: {
   cfg: unknown;
@@ -91,61 +97,69 @@ export async function sendMessageA365(params: {
   const a365Cfg = (cfg as { channels?: { a365?: A365Config } })?.channels?.a365;
   const creds = resolveA365Credentials(a365Cfg);
 
+  const log = getA365Runtime().logging.getChildLogger({ name: "a365-outbound" });
+
+  log.info(`sendMessageA365 called: to=${to} serviceUrl=${serviceUrl} hasMetadata=${!!metadata} hasA365Cfg=${!!a365Cfg} hasCreds=${!!creds}`);
+
   if (!creds) {
+    log.error("A365 credentials not configured");
     return { ok: false, error: "A365 credentials not configured" };
   }
 
-  // If we have service URL and conversation ID from metadata, use proactive messaging
-  const conversationServiceUrl = serviceUrl || metadata?.serviceUrl;
-  const conversationId = to || metadata?.conversationId;
+  const agentIdentity = a365Cfg?.agentIdentity || process.env.AGENT_IDENTITY;
+  if (!agentIdentity) {
+    log.error("Agent identity not configured");
+    return { ok: false, error: "Agent identity not configured. Set AGENT_IDENTITY env var." };
+  }
 
-  if (!conversationServiceUrl || !conversationId) {
-    return { ok: false, error: "Missing service URL or conversation ID for proactive message" };
+  const resolved = await resolveConversation(to, serviceUrl, metadata, creds.tenantId);
+  if (!resolved) {
+    return { ok: false, error: "Missing service URL or conversation ID. User must message the bot first." };
+  }
+
+  // Acquire APX-scoped token via T1/T2/User FIC
+  log.info("Acquiring APX token via agent identity", {
+    agentIdentity,
+    scope: APX_SCOPE,
+    conversationId: resolved.conversationId,
+  });
+
+  const token = await getGraphToken(a365Cfg, agentIdentity, APX_SCOPE);
+  if (!token) {
+    log.error("Failed to acquire APX token via agent identity");
+    return { ok: false, error: "Failed to acquire APX token. Check agent identity and T1/T2 configuration." };
   }
 
   try {
-    // Get access token
-    const token = await getBotFrameworkToken(creds.appId, creds.appPassword, creds.tenantId);
-    if (!token) {
-      return { ok: false, error: "Failed to get Bot Framework access token" };
-    }
-
-    // Send message via REST API
-    const url = `${conversationServiceUrl.replace(/\/$/, "")}/v3/conversations/${encodeURIComponent(conversationId)}/activities`;
-
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        type: "message",
-        text,
-      }),
+    log.info("Sending proactive message via ConnectorClient", {
+      conversationId: resolved.conversationId,
+      textLength: text.length,
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      return { ok: false, error: `Failed to send message: ${response.status} ${errorText}` };
-    }
+    const result = await sendViaConnectorClient({
+      conversationId: resolved.conversationId,
+      serviceUrl: resolved.serviceUrl,
+      token,
+      activity: { type: "message", text },
+    });
 
-    const result = (await response.json()) as { id?: string };
+    log.info("Proactive message sent successfully", { messageId: result.id });
 
     return {
       ok: true,
       messageId: result.id,
-      conversationId,
+      conversationId: resolved.conversationId,
     };
   } catch (err) {
-    const runtime = getA365Runtime();
-    runtime.logging.getChildLogger({ name: "a365" }).error("send failed", { error: String(err) });
-    return { ok: false, error: String(err) };
+    const axErr = err as { response?: { data?: unknown; status?: number }; message?: string };
+    const detail = axErr.response?.data ? JSON.stringify(axErr.response.data) : (err instanceof Error ? err.message : String(err));
+    log.error(`Proactive message failed: ${detail}`);
+    return { ok: false, error: String(detail) };
   }
 }
 
 /**
- * Send an Adaptive Card to a conversation.
+ * Send an Adaptive Card to a conversation using the agent's own identity.
  */
 export async function sendAdaptiveCardA365(params: {
   cfg: unknown;
@@ -162,30 +176,29 @@ export async function sendAdaptiveCardA365(params: {
     return { ok: false, error: "A365 credentials not configured" };
   }
 
-  const conversationServiceUrl = serviceUrl || metadata?.serviceUrl;
-  const conversationId = to || metadata?.conversationId;
+  const log = getA365Runtime().logging.getChildLogger({ name: "a365-outbound" });
 
-  if (!conversationServiceUrl || !conversationId) {
-    return { ok: false, error: "Missing service URL or conversation ID" };
+  const agentIdentity = a365Cfg?.agentIdentity || process.env.AGENT_IDENTITY;
+  if (!agentIdentity) {
+    return { ok: false, error: "Agent identity not configured. Set AGENT_IDENTITY env var." };
+  }
+
+  const resolved = await resolveConversation(to, serviceUrl, metadata, creds.tenantId);
+  if (!resolved) {
+    return { ok: false, error: "Missing service URL or conversation ID. User must message the bot first." };
+  }
+
+  const token = await getGraphToken(a365Cfg, agentIdentity, APX_SCOPE);
+  if (!token) {
+    return { ok: false, error: "Failed to acquire APX token." };
   }
 
   try {
-    // Get access token
-    const token = await getBotFrameworkToken(creds.appId, creds.appPassword, creds.tenantId);
-    if (!token) {
-      return { ok: false, error: "Failed to get Bot Framework access token" };
-    }
-
-    // Send card via REST API
-    const url = `${conversationServiceUrl.replace(/\/$/, "")}/v3/conversations/${encodeURIComponent(conversationId)}/activities`;
-
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
+    const result = await sendViaConnectorClient({
+      conversationId: resolved.conversationId,
+      serviceUrl: resolved.serviceUrl,
+      token,
+      activity: {
         type: "message",
         attachments: [
           {
@@ -193,26 +206,44 @@ export async function sendAdaptiveCardA365(params: {
             content: card,
           },
         ],
-      }),
+      },
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      return { ok: false, error: `Failed to send card: ${response.status} ${errorText}` };
-    }
-
-    const result = (await response.json()) as { id?: string };
+    log.info("Card sent successfully", { messageId: result.id });
 
     return {
       ok: true,
       messageId: result.id,
-      conversationId,
+      conversationId: resolved.conversationId,
     };
   } catch (err) {
-    const runtime = getA365Runtime();
-    runtime.logging.getChildLogger({ name: "a365" }).error("send card failed", { error: String(err) });
-    return { ok: false, error: String(err) };
+    const axErr = err as { response?: { data?: unknown; status?: number }; message?: string };
+    const detail = axErr.response?.data ? JSON.stringify(axErr.response.data) : (err instanceof Error ? err.message : String(err));
+    log.error(`Card send failed: ${detail}`);
+    return { ok: false, error: String(detail) };
   }
+}
+
+/**
+ * Normalize an A365 target to a conversation ID.
+ * Handles various formats that might come from session storage.
+ */
+function normalizeA365Target(to: string | undefined): string | undefined {
+  if (!to) return undefined;
+  const trimmed = to.trim();
+  if (!trimmed) return undefined;
+
+  // Strip common prefixes that might be stored in session lastTo
+  // e.g., "user:xxx", "conversation:xxx", "a365:xxx"
+  const prefixes = ["user:", "conversation:", "a365:", "a365:group:"];
+  for (const prefix of prefixes) {
+    if (trimmed.startsWith(prefix)) {
+      return trimmed.slice(prefix.length);
+    }
+  }
+
+  // Return as-is if no prefix (already a raw conversationId)
+  return trimmed;
 }
 
 /**
@@ -222,7 +253,38 @@ export const a365Outbound: ChannelOutboundAdapter = {
   deliveryMode: "direct",
   textChunkLimit: 4000,
 
+  resolveTarget: ({ to, allowFrom }) => {
+    const log = getA365Runtime().logging.getChildLogger({ name: "a365-outbound" });
+    log.info("resolveTarget called", { to, allowFromCount: allowFrom?.length ?? 0 });
+
+    const normalized = normalizeA365Target(to);
+
+    if (normalized) {
+      log.info("resolveTarget success", { normalized });
+      return { ok: true, to: normalized };
+    }
+
+    // Fall back to first allowFrom entry if available
+    const allowList = (allowFrom ?? []).map((entry) => String(entry).trim()).filter(Boolean);
+    if (allowList.length > 0) {
+      const fallback = normalizeA365Target(allowList[0]);
+      if (fallback) {
+        log.info("resolveTarget fallback", { fallback });
+        return { ok: true, to: fallback };
+      }
+    }
+
+    log.warn("resolveTarget failed - no target");
+    return {
+      ok: false,
+      error: "No A365 conversation target specified. User must message the bot first.",
+    };
+  },
+
   sendText: async ({ cfg, to, text }) => {
+    const log = getA365Runtime().logging.getChildLogger({ name: "a365-outbound" });
+    log.info("sendText called", { to, textLength: text?.length ?? 0 });
+
     const result = await sendMessageA365({ cfg, to, text });
     if (!result.ok) {
       return {

@@ -174,7 +174,7 @@ export async function getGraphToken(
         return token.accessToken;
       }
     } catch (err) {
-      log.error("T1/T2 token flow failed", { error: String(err) });
+      log.error(`T1/T2 token flow failed: ${String(err)}`);
     }
   } else {
     log.debug("T1/T2 not configured", {
@@ -259,7 +259,10 @@ async function fetchGraphTokenT1T2(
   username: string,
   scope: string,
 ): Promise<CachedToken | undefined> {
+  const log = getLogger();
   const tokenEndpoint = `https://login.microsoftonline.com/${config.tenantId}/oauth2/v2.0/token`;
+
+  log.info(`T1/T2 flow starting: username=${username} scope=${scope}`);
 
   // Step 1: Acquire T1 Token
   const t1Body = new URLSearchParams({
@@ -278,10 +281,11 @@ async function fetchGraphTokenT1T2(
 
   if (!t1Response.ok) {
     const errorText = await t1Response.text();
-    throw new Error(`T1 token request failed: ${t1Response.status} ${errorText}`);
+    throw new Error(`T1 token request failed (scope=${scope}): ${t1Response.status} ${errorText}`);
   }
 
   const t1Data = (await t1Response.json()) as { access_token: string };
+  log.info("T1 token acquired successfully");
 
   // Step 2: Acquire T2 Token
   const t2Body = new URLSearchParams({
@@ -300,10 +304,11 @@ async function fetchGraphTokenT1T2(
 
   if (!t2Response.ok) {
     const errorText = await t2Response.text();
-    throw new Error(`T2 token request failed: ${t2Response.status} ${errorText}`);
+    throw new Error(`T2 token request failed (scope=${scope}): ${t2Response.status} ${errorText}`);
   }
 
   const t2Data = (await t2Response.json()) as { access_token: string };
+  log.info("T2 token acquired successfully");
 
   // Step 3: Acquire User Token using Federated Identity Credential
   const userBody = new URLSearchParams({
@@ -324,7 +329,7 @@ async function fetchGraphTokenT1T2(
 
   if (!userResponse.ok) {
     const errorText = await userResponse.text();
-    throw new Error(`User token request failed: ${userResponse.status} ${errorText}`);
+    throw new Error(`User FIC token request failed (scope=${scope}): ${userResponse.status} ${errorText}`);
   }
 
   const userData = (await userResponse.json()) as {

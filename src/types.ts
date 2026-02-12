@@ -163,6 +163,38 @@ export type A365MessageMetadata = {
 };
 
 /**
+ * Stored conversation reference for proactive messaging.
+ * Contains all the information needed to send a message back to a conversation
+ * after the original request has completed (e.g., for cron jobs, async tasks).
+ */
+export type StoredConversationReference = {
+  /** The conversation ID */
+  conversationId: string;
+  /** Bot Framework service URL - required for sending proactive messages */
+  serviceUrl: string;
+  /** Channel ID (e.g., "msteams", "emulator") */
+  channelId: string;
+  /** The bot's ID in this channel */
+  botId: string;
+  /** The bot's display name */
+  botName?: string;
+  /** The user's ID in this channel */
+  userId: string;
+  /** The user's display name */
+  userName?: string;
+  /** The user's AAD Object ID */
+  userAadId?: string;
+  /** Azure AD tenant ID */
+  tenantId?: string;
+  /** Whether this is a group conversation */
+  isGroup: boolean;
+  /** User's locale */
+  locale?: string;
+  /** Timestamp when this reference was last updated */
+  updatedAt: number;
+};
+
+/**
  * Graph API calendar event.
  */
 export type GraphCalendarEvent = {

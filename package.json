@@ -7,6 +7,7 @@
     "openclaw": "^2026.2.9"
   },
   "dependencies": {
+    "@azure/msal-node": "^2.16.2",
     "@microsoft/agents-activity": "^1.1.0",
     "@microsoft/agents-hosting": "^1.1.0",
     "@microsoft/agents-hosting-express": "^1.1.0",

@@ -1,8 +1,10 @@
 import type { OpenClawConfig, RuntimeEnv } from "openclaw/plugin-sdk";
-import type { A365Config, A365MessageMetadata } from "./types.js";
+import type { A365Config, A365MessageMetadata, StoredConversationReference } from "./types.js";
 import { getA365Runtime } from "./runtime.js";
 import { runWithGraphToolContext } from "./graph-tools.js";
 import { resolveA365Credentials } from "./token.js";
+import { saveConversationReference } from "./conversation-store.js";
+import { setAdapter } from "./adapter-store.js";
 
 export type MonitorA365Opts = {
   cfg: OpenClawConfig;
@@ -16,20 +18,27 @@ export type MonitorA365Result = {
 };
 
 /**
- * Extract message metadata from an Agents SDK activity.
+ * Activity shape for metadata extraction.
  */
-export function extractMessageMetadata(activity: {
+export type ActivityForMetadata = {
   from?: { id: string; name?: string; aadObjectId?: string };
+  recipient?: { id: string; name?: string };
   conversation?: { id: string; isGroup?: boolean; tenantId?: string };
   serviceUrl?: string;
   id?: string;
   channelId?: string;
+  locale?: string;
   channelData?: {
     tenant?: { id: string };
     team?: { id: string; name?: string };
     channel?: { id: string; name?: string };
   };
-}): A365MessageMetadata {
+};
+
+/**
+ * Extract message metadata from an Agents SDK activity.
+ */
+export function extractMessageMetadata(activity: ActivityForMetadata): A365MessageMetadata {
   return {
     userId: activity.from?.id || "",
     userEmail: activity.from?.aadObjectId || activity.from?.id,
@@ -44,6 +53,26 @@ export function extractMessageMetadata(activity: {
     teamId: activity.channelData?.team?.id,
     teamName: activity.channelData?.team?.name,
     channelName: activity.channelData?.channel?.name,
+  };
+}
+
+/**
+ * Build a StoredConversationReference from an activity for proactive messaging.
+ */
+export function buildConversationReference(activity: ActivityForMetadata): StoredConversationReference {
+  return {
+    conversationId: activity.conversation?.id || "",
+    serviceUrl: activity.serviceUrl || "",
+    channelId: activity.channelId || "msteams",
+    botId: activity.recipient?.id || "",
+    botName: activity.recipient?.name,
+    userId: activity.from?.id || "",
+    userName: activity.from?.name,
+    userAadId: activity.from?.aadObjectId,
+    tenantId: activity.conversation?.tenantId || activity.channelData?.tenant?.id,
+    isGroup: activity.conversation?.isGroup || false,
+    locale: activity.locale,
+    updatedAt: Date.now(),
   };
 }
 
@@ -152,6 +181,20 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
         textLength: text.length,
       });
 
+      // Store conversation reference for proactive messaging
+      const convRef = buildConversationReference(activity);
+      log.info("Saving conversation reference", {
+        conversationId: convRef.conversationId,
+        serviceUrl: convRef.serviceUrl,
+        channelId: convRef.channelId,
+      });
+      try {
+        await saveConversationReference(convRef);
+        log.info("Conversation reference saved successfully", { conversationId: convRef.conversationId });
+      } catch (err) {
+        log.error("Failed to save conversation reference", { error: String(err) });
+      }
+
       // Check allowlist if configured
       const allowFrom = a365Cfg?.allowFrom;
       if (allowFrom && allowFrom.length > 0 && !allowFrom.includes("*")) {
@@ -221,7 +264,7 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
             WasMentioned: true, // Assume mentioned for DMs
             CommandAuthorized: isOwner,
             OriginatingChannel: "a365" as const,
-            OriginatingTo: a365To,
+            OriginatingTo: conversationId,
           });
 
           // Create a simple reply dispatcher that tracks pending sends
@@ -307,6 +350,29 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
             await Promise.all(pendingSends);
 
             log.info("dispatch complete", { queuedFinal, textCount: counts?.text ?? 0, repliesSent: replyCount });
+
+            // Update the main session's lastChannel/lastTo for cron delivery support.
+            // Cron jobs use the "main" session (agent:main:main) to resolve "channel: last" delivery,
+            // so we must update it with the A365 context whenever a user messages via A365.
+            try {
+              const storePath = core.channel.session.resolveStorePath(cfg.session?.store);
+              const mainSessionKey = "agent:main:main";
+              log.info("Updating main session for cron delivery", {
+                mainSessionKey,
+                conversationId,
+                serviceUrl: metadata.serviceUrl,
+                storePath
+              });
+              await core.channel.session.updateLastRoute({
+                storePath,
+                sessionKey: mainSessionKey,
+                channel: "a365",
+                to: conversationId,
+              });
+              log.info("Successfully updated main session for cron delivery", { mainSessionKey, conversationId });
+            } catch (updateErr) {
+              log.error("Failed to update main session for cron delivery", { error: String(updateErr) });
+            }
           } catch (err) {
             log.error("handler failed", { error: String(err) });
             runtime.error?.(`a365 handler failed: ${String(err)}`);
@@ -324,6 +390,12 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
       );
     },
   );
+
+  // Store the adapter for proactive messaging (outbound.ts uses it to create TurnContext)
+  const { CloudAdapter } = await import("@microsoft/agents-hosting");
+  const adapter = (agentApp.adapter ?? new CloudAdapter()) as InstanceType<typeof CloudAdapter>;
+  setAdapter(adapter);
+  log.info("Stored adapter for proactive messaging");
 
   // Start the server using the Agents SDK
   const { startServer } = await import("@microsoft/agents-hosting-express");

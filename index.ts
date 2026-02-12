@@ -4,10 +4,18 @@ import { a365Plugin } from "./src/channel.js";
 import { setA365Runtime } from "./src/runtime.js";
 
 // Re-export monitor for external use
-export { monitorA365Provider } from "./src/monitor.js";
+export { monitorA365Provider, buildConversationReference } from "./src/monitor.js";
 export { createGraphTools } from "./src/graph-tools.js";
 export { sendMessageA365, sendAdaptiveCardA365 } from "./src/outbound.js";
-export type { A365Config, A365MessageMetadata, GraphCalendarEvent } from "./src/types.js";
+export {
+  saveConversationReference,
+  getConversationReference,
+  getConversationReferenceByUser,
+  deleteConversationReference,
+  listConversationReferences,
+  clearConversationReferences,
+} from "./src/conversation-store.js";
+export type { A365Config, A365MessageMetadata, GraphCalendarEvent, StoredConversationReference } from "./src/types.js";
 
 const plugin = {
   id: "a365",
