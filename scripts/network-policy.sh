@@ -19,6 +19,8 @@ graph.microsoft.com
 smba.trafficmanager.net
 directline.botframework.com
 api.botframework.com
+api.klipy.com
+static.klipy.com
 "
 
 # LLM provider domains based on configured keys

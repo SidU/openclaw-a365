@@ -101,6 +101,10 @@ export const a365Plugin: ChannelPlugin<ResolvedA365Account, A365Probe> = {
       if (a365Cfg?.owner) {
         hints.push(`- Default calendar owner: ${a365Cfg.owner}`);
       }
+      const klipyKey = a365Cfg?.klipyApiKey || process.env.KLIPY_API_KEY;
+      if (klipyKey) {
+        hints.push("- You have a send_gif tool to send animated GIFs inline. Use it sparingly and only when it genuinely fits the moment — celebrations, humor, greetings, empathy. Do NOT use it on every message. Never use it when delivering bad news or discussing serious matters.");
+      }
       return hints;
     },
   },

@@ -226,6 +226,10 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
           currentUserEmail: metadata.userEmail,
           currentUserAadId: metadata.userAadId,
           currentUserRole: userRole,
+          sendActivity: async (activity) => {
+            const result = await context.sendActivity(activity);
+            return { id: result?.id };
+          },
         },
         async () => {
           // Resolve the agent route
