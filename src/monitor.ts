@@ -1,10 +1,10 @@
 import type { OpenClawConfig, RuntimeEnv } from "openclaw/plugin-sdk";
-import type { A365Config, A365MessageMetadata, StoredConversationReference } from "./types.js";
+import type { A365Config, A365MessageMetadata } from "./types.js";
 import { getA365Runtime } from "./runtime.js";
 import { runWithGraphToolContext } from "./graph-tools.js";
 import { resolveA365Credentials } from "./token.js";
 import { saveConversationReference } from "./conversation-store.js";
-import { setAdapter } from "./adapter-store.js";
+import { setAdapter, setBlueprintClientId } from "./adapter-store.js";
 
 export type MonitorA365Opts = {
   cfg: OpenClawConfig;
@@ -181,18 +181,21 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
         textLength: text.length,
       });
 
-      // Store conversation reference for proactive messaging
-      const convRef = buildConversationReference(activity);
-      log.info("Saving conversation reference", {
-        conversationId: convRef.conversationId,
-        serviceUrl: convRef.serviceUrl,
-        channelId: convRef.channelId,
-      });
+      // Store conversation reference from this AU-based request for proactive messaging.
+      // The SDK's getConversationReference() preserves agentic identity metadata
+      // (recipient.role, agenticAppId, agenticUserId, etc.) which the SDK needs
+      // to acquire the correct AU token when sending proactively.
       try {
-        await saveConversationReference(convRef);
-        log.info("Conversation reference saved successfully", { conversationId: convRef.conversationId });
+        const convRef = activity.getConversationReference();
+        log.info("Saving conversation reference", {
+          conversationId: convRef.conversation?.id,
+          serviceUrl: convRef.serviceUrl,
+          agentRole: convRef.agent?.role,
+        });
+        await saveConversationReference(convRef, metadata.userAadId);
+        log.info("Conversation reference saved successfully");
       } catch (err) {
-        log.error("Failed to save conversation reference", { error: String(err) });
+        log.error(`Failed to save conversation reference: ${String(err)}`)
       }
 
       // Check allowlist if configured
@@ -352,26 +355,18 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
             log.info("dispatch complete", { queuedFinal, textCount: counts?.text ?? 0, repliesSent: replyCount });
 
             // Update the main session's lastChannel/lastTo for cron delivery support.
-            // Cron jobs use the "main" session (agent:main:main) to resolve "channel: last" delivery,
-            // so we must update it with the A365 context whenever a user messages via A365.
             try {
               const storePath = core.channel.session.resolveStorePath(cfg.session?.store);
               const mainSessionKey = "agent:main:main";
-              log.info("Updating main session for cron delivery", {
-                mainSessionKey,
-                conversationId,
-                serviceUrl: metadata.serviceUrl,
-                storePath
-              });
               await core.channel.session.updateLastRoute({
                 storePath,
                 sessionKey: mainSessionKey,
                 channel: "a365",
                 to: conversationId,
               });
-              log.info("Successfully updated main session for cron delivery", { mainSessionKey, conversationId });
+              log.info("Updated main session for cron delivery", { conversationId });
             } catch (updateErr) {
-              log.error("Failed to update main session for cron delivery", { error: String(updateErr) });
+              log.error(`Failed to update main session: ${String(updateErr)}`);
             }
           } catch (err) {
             log.error("handler failed", { error: String(err) });
@@ -391,11 +386,20 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
     },
   );
 
-  // Store the adapter for proactive messaging (outbound.ts uses it to create TurnContext)
+  // Store the adapter for proactive messaging
   const { CloudAdapter } = await import("@microsoft/agents-hosting");
   const adapter = (agentApp.adapter ?? new CloudAdapter()) as InstanceType<typeof CloudAdapter>;
   setAdapter(adapter);
-  log.info("Stored adapter for proactive messaging");
+
+  // Store the Blueprint Client App ID — continueConversation must be called with
+  // this ID (not the bot's own app ID) so the SDK routes through the correct
+  // T1/T2/AU token flow for agentic identity.
+  const blueprintClientId =
+    a365Cfg?.graph?.blueprintClientAppId?.trim() ||
+    process.env.BLUEPRINT_CLIENT_APP_ID?.trim() ||
+    creds.appId; // fallback to bot app ID if blueprint not separately configured
+  setBlueprintClientId(blueprintClientId);
+  log.info("Stored adapter and blueprint client ID for proactive messaging", { blueprintClientId });
 
   // Start the server using the Agents SDK
   const { startServer } = await import("@microsoft/agents-hosting-express");
