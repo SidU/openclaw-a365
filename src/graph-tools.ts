@@ -45,6 +45,8 @@ export type GraphToolContext = {
   currentUserAadId?: string;
   /** Role of the current user */
   currentUserRole?: "Owner" | "Requester";
+  /** Callback to send an activity directly to the conversation (e.g. GIF attachments) */
+  sendActivity?: (activity: unknown) => Promise<{ id?: string }>;
 };
 
 /**
@@ -195,6 +197,95 @@ function validateEmails(emails: string[], fieldName: string): { ok: true } | { o
 }
 
 type ToolResult = AgentToolResult<unknown>;
+
+// --- GIF dedup ring buffer (module-level, in-memory) ---
+const RECENT_GIF_MAX = 20;
+const recentGifIds: number[] = [];
+const recentGifSet = new Set<number>();
+
+function addToRecentGifs(id: number): void {
+  if (recentGifSet.has(id)) return;
+  if (recentGifIds.length >= RECENT_GIF_MAX) {
+    const evicted = recentGifIds.shift()!;
+    recentGifSet.delete(evicted);
+  }
+  recentGifIds.push(id);
+  recentGifSet.add(id);
+}
+
+function isRecentGif(id: number): boolean {
+  return recentGifSet.has(id);
+}
+
+/**
+ * Search Klipy for GIFs, pick a non-recent random result, and send it
+ * directly into the conversation via the turn context's sendActivity.
+ */
+async function sendGif(
+  cfg: A365Config | undefined,
+  params: { query: string },
+): Promise<ToolResult> {
+  const log = getLogger();
+  const klipyKey = cfg?.klipyApiKey || process.env.KLIPY_API_KEY;
+  if (!klipyKey) {
+    return { isError: true, content: [{ type: "text", text: "Klipy API key not configured. Set KLIPY_API_KEY env var or klipyApiKey in config." }] };
+  }
+
+  const ctx = getGraphToolContext();
+  if (!ctx?.sendActivity) {
+    return { isError: true, content: [{ type: "text", text: "Cannot send GIF: sendActivity not available in current context." }] };
+  }
+
+  const { query } = params;
+  const url = `https://api.klipy.com/api/v1/${encodeURIComponent(klipyKey)}/gifs/search?q=${encodeURIComponent(query)}&per_page=20`;
+
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      log.warn("Klipy API error", { status: resp.status });
+      return { isError: true, content: [{ type: "text", text: `Klipy API error: ${resp.status}` }] };
+    }
+
+    const json = await resp.json() as { data?: { data?: Array<{ id: number; title?: string; slug?: string; file?: { hd?: { gif?: { url?: string } } } }> } };
+    const results = json.data?.data;
+    if (!results || results.length === 0) {
+      return { content: [{ type: "text", text: JSON.stringify({ sent: false, reason: "No GIFs found for that query." }) }] };
+    }
+
+    // Filter out recently-used GIFs
+    const fresh = results.filter((g) => !isRecentGif(g.id));
+    const pool = fresh.length > 0 ? fresh : results; // fall back to all if everything is recent
+
+    // Pick a random result
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+    const gifUrl = pick.file?.hd?.gif?.url;
+    if (!gifUrl) {
+      return { isError: true, content: [{ type: "text", text: "Selected GIF has no HD URL available." }] };
+    }
+
+    // Send the GIF as an inline attachment via the turn context
+    await ctx.sendActivity({
+      type: "message",
+      attachments: [
+        {
+          contentType: "image/gif",
+          contentUrl: gifUrl,
+          name: `${pick.slug || "gif"}.gif`,
+        },
+      ],
+    });
+
+    addToRecentGifs(pick.id);
+    log.debug("GIF sent", { id: pick.id, title: pick.title, query });
+
+    return {
+      content: [{ type: "text", text: JSON.stringify({ sent: true, title: pick.title || pick.slug || "GIF", query }) }],
+    };
+  } catch (err) {
+    log.error("sendGif failed", { error: String(err) });
+    return { isError: true, content: [{ type: "text", text: `Failed to send GIF: ${String(err)}` }] };
+  }
+}
 
 /**
  * Get calendar events for a user within a date range.
@@ -678,8 +769,9 @@ async function findMeetingTimes(
  */
 export function createGraphTools(cfg?: A365Config): AgentTool<TSchema, unknown>[] {
   const owner = cfg?.owner;
+  const klipyKey = cfg?.klipyApiKey || process.env.KLIPY_API_KEY;
 
-  return [
+  const tools: AgentTool<TSchema, unknown>[] = [
     {
       name: "get_calendar_events",
       label: "Get Calendar Events",
@@ -810,4 +902,19 @@ export function createGraphTools(cfg?: A365Config): AgentTool<TSchema, unknown>[
       execute: async (_toolCallId, params) => getUserInfo(cfg, params as Parameters<typeof getUserInfo>[1]),
     },
   ];
+
+  // Add GIF tool only if Klipy API key is configured
+  if (klipyKey) {
+    tools.push({
+      name: "send_gif",
+      label: "Send GIF",
+      description: "Search for and send an animated GIF inline in the conversation. The GIF is sent as a separate message. Use sparingly and only when it genuinely fits the moment.",
+      parameters: Type.Object({
+        query: Type.String({ description: "Search query describing the GIF to find (e.g. 'thumbs up', 'celebration', 'good morning')" }),
+      }),
+      execute: async (_toolCallId, params) => sendGif(cfg, params as { query: string }),
+    });
+  }
+
+  return tools;
 }

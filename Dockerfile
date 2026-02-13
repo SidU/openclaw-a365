@@ -52,6 +52,23 @@ RUN printf '%s\n' '#!/bin/sh' > /app/entrypoint.sh && \
     printf '%s\n' '  cp -a /root/.openclaw/. "$OPENCLAW_STATE_DIR/"' >> /app/entrypoint.sh && \
     printf '%s\n' 'fi' >> /app/entrypoint.sh && \
     printf '%s\n' '' >> /app/entrypoint.sh && \
+    printf '%s\n' '# Replace ~/.openclaw with a symlink to the persistent volume.' >> /app/entrypoint.sh && \
+    printf '%s\n' '# This eliminates the dual-state-dir problem and ensures workspace,' >> /app/entrypoint.sh && \
+    printf '%s\n' '# identity, and all other writes land in the volume automatically.' >> /app/entrypoint.sh && \
+    printf '%s\n' 'if [ -n "$OPENCLAW_STATE_DIR" ] && [ ! -L /root/.openclaw ]; then' >> /app/entrypoint.sh && \
+    printf '%s\n' '  rm -rf /root/.openclaw' >> /app/entrypoint.sh && \
+    printf '%s\n' '  ln -sf "$OPENCLAW_STATE_DIR" /root/.openclaw' >> /app/entrypoint.sh && \
+    printf '%s\n' '  mkdir -p "$OPENCLAW_STATE_DIR/workspace"' >> /app/entrypoint.sh && \
+    printf '%s\n' '  echo "=== ~/.openclaw -> $OPENCLAW_STATE_DIR ==="' >> /app/entrypoint.sh && \
+    printf '%s\n' 'fi' >> /app/entrypoint.sh && \
+    printf '%s\n' '' >> /app/entrypoint.sh && \
+    printf '%s\n' '# Sync plugin source from image to volume so code changes take effect' >> /app/entrypoint.sh && \
+    printf '%s\n' 'if [ -d "$OPENCLAW_STATE_DIR/extensions/a365" ]; then' >> /app/entrypoint.sh && \
+    printf '%s\n' '  echo "=== Syncing plugin source ==="' >> /app/entrypoint.sh && \
+    printf '%s\n' '  cp -a /app/src "$OPENCLAW_STATE_DIR/extensions/a365/"' >> /app/entrypoint.sh && \
+    printf '%s\n' '  cp -f /app/index.ts /app/package.json "$OPENCLAW_STATE_DIR/extensions/a365/"' >> /app/entrypoint.sh && \
+    printf '%s\n' 'fi' >> /app/entrypoint.sh && \
+    printf '%s\n' '' >> /app/entrypoint.sh && \
     printf '%s\n' '# Apply network policy (if not unrestricted)' >> /app/entrypoint.sh && \
     printf '%s\n' '/app/scripts/network-policy.sh' >> /app/entrypoint.sh && \
     printf '%s\n' '' >> /app/entrypoint.sh && \

@@ -75,6 +75,9 @@ services:
       - TOKEN_CALLBACK_URL=${TOKEN_CALLBACK_URL:-}
       - TOKEN_CALLBACK_TOKEN=${TOKEN_CALLBACK_TOKEN:-}
 
+      # Klipy GIF API (optional, enables send_gif tool)
+      - KLIPY_API_KEY=${KLIPY_API_KEY:-}
+
       # OpenClaw Configuration
       - OPENCLAW_STATE_DIR=/app/data
       - OPENCLAW_LOG_LEVEL=${OPENCLAW_LOG_LEVEL:-info}

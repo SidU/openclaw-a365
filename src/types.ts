@@ -60,6 +60,8 @@ export type A365Config = {
   groupAllowFrom?: Array<string | number>;
   /** Group policy */
   groupPolicy?: string;
+  /** Klipy API key for GIF search (https://partner.klipy.com/api-keys) */
+  klipyApiKey?: string;
 };
 
 /**
