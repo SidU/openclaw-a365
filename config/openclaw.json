@@ -12,7 +12,7 @@
       "a365": {
         "source": "path",
         "sourcePath": "/app",
-        "installPath": "/root/.openclaw/extensions/a365"
+        "installPath": "/app/data/extensions/a365"
       }
     }
   },

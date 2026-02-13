@@ -76,6 +76,7 @@ services:
       - TOKEN_CALLBACK_TOKEN=${TOKEN_CALLBACK_TOKEN:-}
 
       # OpenClaw Configuration
+      - OPENCLAW_STATE_DIR=/app/data
       - OPENCLAW_LOG_LEVEL=${OPENCLAW_LOG_LEVEL:-info}
       - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-openclaw-a365-default-token}
       - NODE_ENV=production

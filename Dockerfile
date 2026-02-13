@@ -25,7 +25,7 @@ COPY . .
 
 # OpenClaw handles TypeScript compilation via tsx at runtime
 
-# Create config directory and initialize with minimal config for plugin install
+# Install plugin into default state dir during build (can't use /app/data since plugin source is /app)
 RUN mkdir -p /root/.openclaw && \
     echo '{"gateway":{"mode":"local"}}' > /root/.openclaw/openclaw.json
 
@@ -36,12 +36,21 @@ RUN pnpm openclaw plugins install . && \
 # Now copy the full config with A365 channel enabled
 COPY config/openclaw.json /root/.openclaw/openclaw.json
 
+# At runtime, OPENCLAW_STATE_DIR=/app/data (set via docker-compose)
+# The entrypoint seeds /app/data from /root/.openclaw on first start
+
 # Copy network policy script
 COPY scripts/network-policy.sh /app/scripts/network-policy.sh
 RUN chmod +x /app/scripts/network-policy.sh
 
-# Create entrypoint script with network policy and model configuration support
+# Create entrypoint script with state seeding, network policy, and model configuration
 RUN printf '%s\n' '#!/bin/sh' > /app/entrypoint.sh && \
+    printf '%s\n' '' >> /app/entrypoint.sh && \
+    printf '%s\n' '# Seed persistent state dir from build-time install on first start' >> /app/entrypoint.sh && \
+    printf '%s\n' 'if [ -n "$OPENCLAW_STATE_DIR" ] && [ ! -f "$OPENCLAW_STATE_DIR/openclaw.json" ]; then' >> /app/entrypoint.sh && \
+    printf '%s\n' '  echo "=== First start: seeding $OPENCLAW_STATE_DIR from build ==="' >> /app/entrypoint.sh && \
+    printf '%s\n' '  cp -a /root/.openclaw/. "$OPENCLAW_STATE_DIR/"' >> /app/entrypoint.sh && \
+    printf '%s\n' 'fi' >> /app/entrypoint.sh && \
     printf '%s\n' '' >> /app/entrypoint.sh && \
     printf '%s\n' '# Apply network policy (if not unrestricted)' >> /app/entrypoint.sh && \
     printf '%s\n' '/app/scripts/network-policy.sh' >> /app/entrypoint.sh && \
